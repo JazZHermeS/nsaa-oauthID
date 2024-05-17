@@ -1,4 +1,6 @@
+//OIDC express session for storing data
 const express = require('express')
+const session = require('express-session')
 const logger = require('morgan')
 const passport = require('passport')
 const LocalStrategy = require('passport-local').Strategy
@@ -27,11 +29,9 @@ const JwtStrategy = require('passport-jwt').Strategy
 //var database = require('./database/database');
 const sqlite3 = require('sqlite3').verbose()
 
-const app = express()
-const port = 3000
+// OIDC 0. Make then necessary requires in the top of the file
+const { Issuer, Strategy: OpenIDConnectStrategy } = require('openid-client')
 
-app.use(cookieParser())
-app.use(logger('dev'))
 
 // Create database
 const db = new sqlite3.Database('database.db');
@@ -46,6 +46,45 @@ db.serialize(() => {
 // Query search pswd
 const query = 'SELECT hashedpswd FROM users WHERE username = ?';
 const query2 = 'SELECT username FROM users WHERE username = ?';
+
+
+async function main () {
+  const app = express()
+  const port = 3000
+  
+  app.use(cookieParser())
+  app.use(logger('dev'))
+
+  // Configuration of express session
+  app.use(session({
+    secret: require('crypto').randomBytes(32).toString('base64url'), // This is the secret used to sign the session cookie. We are creating a random base64url string with 256 bits of entropy.
+    resave: false, // Default value is true (although it is going to be false in the next major release). We do not need the session to be saved back to the session store when the session has not been modified during the request.
+    saveUninitialized: false // Default value is true (although it is going to be false in the next major release). We do not need sessions that are "uninitialized" to be saved to the store
+  }))
+
+    // OIDC 1. Download the issuer configuration from the well-known openid configuration (OIDC discovery)
+  const oidcIssuer = await Issuer.discover(process.env.OIDC_PROVIDER)
+
+  // OIDC 2. Setup an OIDC client/relying party.
+  const oidcClient = new oidcIssuer.Client({
+    client_id: process.env.OIDC_CLIENT_ID,
+    client_secret: process.env.OIDC_CLIENT_SECRET,
+    redirect_uris: [process.env.OIDC_CALLBACK_URL],
+    response_types: ['code'] // code is use for Authorization Code Grant; token for Implicit Grant
+  })
+
+  // OIDC 3. Configure the strategy.
+  passport.use('oidc', new OpenIDConnectStrategy({
+    client: oidcClient,
+    usePKCE: false // We are using standard Authorization Code Grant. We do not need PKCE.
+  }, (tokenSet, userInfo, done) => {
+    console.log(tokenSet, userInfo)
+    if (tokenSet === undefined || userInfo === undefined) {
+      return done('no tokenSet or userInfo')
+    }
+    return done(null, userInfo)
+  }))
+
 
 
 /*
@@ -156,6 +195,17 @@ passport.use('jwtCookie', new JwtStrategy(
 
 
 app.use(express.urlencoded({ extended: true })) // needed to retrieve html form fields (it's a requirement of the local strategy)
+
+ // We will store in the session the complete passport user object
+ passport.serializeUser(function (user, done) {
+  return done(null, user)
+})
+
+// The returned passport user is just the user object that is stored in the session
+passport.deserializeUser(function (user, done) {
+  return done(null, user)
+})
+
 app.use(passport.initialize())  // we load the passport auth middleware to our express application. It should be loaded before any route.
 
 // Route hadler for OAtuth singin
@@ -233,6 +283,37 @@ app.get('/oauth2cb', async (req, res) => { // watchout the async definition here
     console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`)
   // just copy and paste or invoke the function you used for creating the JWT for a user logging in with username and password.
 })
+
+
+// Route handler for OIDC
+app.get('/oidc/cb', passport.authenticate('oidc', { failureRedirect: '/login', failureMessage: true }), (req, res) => {
+  /**
+ * Create our JWT using the req.user.email as subject, and set the cookie.
+  */
+  // This is what ends up in our JWT
+  const jwtClaims = {
+    sub: req.user.email,
+    iss: 'localhost:3000',
+    aud: 'localhost:3000',
+    exp: Math.floor(Date.now() / 1000) + 604800, // 1 week (7×24×60×60=604800s) from now
+    role: 'user', // just to show a private JWT field
+    git: true
+  }
+
+  // generate a signed json web token. By default the signing algorithm is HS256 (HMAC-SHA256), i.e. we will 'sign' with a symmetric secret
+  const token = jwt.sign(jwtClaims, jwtSecret)
+
+  // From now, just send the JWT directly to the browser. Later, you should send the token inside a cookie.
+  //res.json(token)
+  res.cookie('jwt', token, { httpOnly: true, secure: true }) // Write the token to a cookie with name 'jwt' and enable the flags httpOnly and secure.
+  res.redirect('/')
+
+  // And let us log a link to the jwt.io debugger for easy checking/verifying:
+  console.log(`Token sent. Debug at https://jwt.io/?value=${token}`)
+  console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`)
+ // just copy and paste or invoke the function you used for creating the JWT for a user logging in with username and password. The only difference is that now the sub claim will be set to req.user.email
+})
+
 
 /*
 app.get('/', (req, res) => {
@@ -312,6 +393,11 @@ app.post('/login',
   }
 )
 
+// OIDC endpoint: oidc strategy detects that it is the login endpoint and redirects to the authorization endpoint of the OIDC Provide
+app.get('/oidc/login',
+  passport.authenticate('oidc', { scope: 'openid email' })
+)
+
 app.get('/logout',
   passport.authenticate(
     'jwtCookie',
@@ -342,6 +428,7 @@ app.get('/logout',
   }
 )
 
+
 //TLS 
 const serverOptions = {
   key: fs.readFileSync(path.join(__dirname, 'server.key')),
@@ -370,3 +457,6 @@ app.use(function (err, req, res, next) {
 app.listen(port, () => {
   console.log(`Example app listening at http://localhost:${port}`)
 })
+}
+
+main().catch(e => { console.log(e) })
