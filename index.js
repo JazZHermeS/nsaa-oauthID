@@ -29,6 +29,12 @@ const JwtStrategy = require('passport-jwt').Strategy
 //var database = require('./database/database');
 const sqlite3 = require('sqlite3').verbose()
 
+// movidas OIDC
+const openidClient = require('openid-client')
+openidClient.custom.setHttpOptionsDefaults({
+  timeout: 10000 // Aumentar el tiempo de espera a 10 segundos
+});
+
 // OIDC 0. Make then necessary requires in the top of the file
 const { Issuer, Strategy: OpenIDConnectStrategy } = require('openid-client')
 
