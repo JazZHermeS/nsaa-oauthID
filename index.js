@@ -1,10 +1,14 @@
 //OIDC express session for storing data
 const express = require('express')
 const session = require('express-session')
+
+
 const logger = require('morgan')
 const passport = require('passport')
 const LocalStrategy = require('passport-local').Strategy
 const jwt = require('jsonwebtoken') //needed to create JWT
+const CustomStrategy = require('passport-custom').Strategy //RADIUS
+
 //TLS
 const https = require('https');
 const fs = require('fs');
@@ -37,6 +41,22 @@ openidClient.custom.setHttpOptionsDefaults({
 
 // OIDC 0. Make then necessary requires in the top of the file
 const { Issuer, Strategy: OpenIDConnectStrategy } = require('openid-client')
+
+
+// RADIUS
+const radius = require('radius');
+const RadiusClient = require('node-radius-client');
+const {
+    dictionaries: {
+      rfc2865: {
+        file,
+        attributes,
+      },
+    },
+  } = require('node-radius-utils');
+  const RADIUS_HOST =  process.env.RADIUS_HOST
+  const RADIUS_SECRET = process.env.RADIUS_SECRET
+
 
 
 // Create database
@@ -90,6 +110,39 @@ async function main () {
     }
     return done(null, userInfo)
   }))
+
+
+  /// RADIUS PASSSPORT
+  passport.use('radius', new CustomStrategy(
+    async function (req, done) {
+      const username = req.body.username
+      const password = req.body.password
+
+      const radiusClient = new RadiusClient({host: RADIUS_HOST})
+
+      try {
+        const response = await radiusClient.accessRequest({
+          secret: RADIUS_SECRET,
+          attributes: [
+            [attributes.USER_NAME, username + "@upc.edu"],
+            [attributes.USER_PASSWORD, password],
+          ],
+        })
+
+        if (response.code === 'Access-Accept') {
+          const user = {
+            username: username,
+            description: 'the "only" user that deserves to get to this server'
+          }
+          return done(null, user)
+        }
+      } catch (error) {
+          console.error(error)
+      }
+      return done(null, false)
+    }
+  )
+)
 
 
 
@@ -321,6 +374,32 @@ app.get('/oidc/cb', passport.authenticate('oidc', { failureRedirect: '/login', f
 })
 
 
+// Route handler RADIUS
+app.post('/login-radius',
+        passport.authenticate('radius', { session: false, failureRedirect: '/login' }), // we indicate that this endpoint must pass through our 'username-password' passport strategy, which we defined before
+        (req, res) => {
+                // This is what ends up in our JWT
+            const jwtClaims = {
+              sub: req.user.username,
+              iss: 'localhost:3000',
+              aud: 'localhost:3000',
+              exp: Math.floor(Date.now() / 1000) + 604800, // 1 week (7×24×60×60=604800s) from now
+              role: 'user', // just to show a private JWT field
+              git: true
+            }
+
+            // generate a signed json web token. By default the signing algorithm is HS256 (HMAC-SHA256), i.e. we will 'sign' with a symmetric secret
+            const token = jwt.sign(jwtClaims, jwtSecret)
+
+            res.cookie('jwt', token, { httpOnly: true, secure: true }) // Write the token to a cookie with name 'jwt' and enable the flags httpOnly and secure.
+            res.redirect('/')
+
+            // And let us log a link to the jwt.io debugger for easy checking/verifying:
+            console.log(`Token sent. Debug at https://jwt.io/?value=${token}`)
+            console.log(`Token secret (for verifying the signature): ${jwtSecret.toString('base64')}`)
+        }
+    )
+
 /*
 app.get('/', (req, res) => {
   res.send('Welcome to your private page, user!')
@@ -434,7 +513,7 @@ app.get('/logout',
   }
 )
 
-
+/*
 //TLS 
 const serverOptions = {
   key: fs.readFileSync(path.join(__dirname, 'server.key')),
@@ -445,8 +524,8 @@ const serverOptions = {
 https.createServer(serverOptions, (req, res) => {
   res.writeHead(200);
   res.end('Hello, HTTPS World!');
-}).listen(433, () => {
-  console.log('Server is running on port 433');
+}).listen(443, () => {
+  console.log('Server is running on port 443');
 });
 /*
 const server = https.createServer(serverOptions, app);
