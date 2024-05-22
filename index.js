@@ -267,7 +267,7 @@ passport.deserializeUser(function (user, done) {
 
 app.use(passport.initialize())  // we load the passport auth middleware to our express application. It should be loaded before any route.
 
-// Route hadler for OAtuth singin
+// Route hadler for OAtuth singin GITHUB
 app.get('/oauth2cb', async (req, res) => { // watchout the async definition here. It is necessary to be able to use async/await in the route handler
   /**
    * 1. Retrieve the authorization code from the query parameters
@@ -350,8 +350,12 @@ app.get('/oidc/cb', passport.authenticate('oidc', { failureRedirect: '/login', f
  * Create our JWT using the req.user.email as subject, and set the cookie.
   */
   // This is what ends up in our JWT
+  console.log("IMPRESION DEL PROFILE");
+  console.log(req.user.given_name);
   const jwtClaims = {
-    sub: req.user.email,
+    //sub: req.user.email
+    sub: req.user.given_name,
+    exm: req.user.family_name,
     iss: 'localhost:3000',
     aud: 'localhost:3000',
     exp: Math.floor(Date.now() / 1000) + 604800, // 1 week (7×24×60×60=604800s) from now
@@ -480,7 +484,7 @@ app.post('/login',
 
 // OIDC endpoint: oidc strategy detects that it is the login endpoint and redirects to the authorization endpoint of the OIDC Provide
 app.get('/oidc/login',
-  passport.authenticate('oidc', { scope: 'openid email' })
+  passport.authenticate('oidc', { scope: 'openid profile' })
 )
 
 app.get('/logout',
